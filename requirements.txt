@@ -1,0 +1,5 @@
+muggle-ocr
+requests
+tenacity
+oss2
+pyDes

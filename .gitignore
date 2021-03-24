@@ -1,0 +1,4 @@
+*.jfif
+config.json
+env
+.vs*
