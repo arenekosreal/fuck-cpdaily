@@ -9,6 +9,7 @@ import random
 import logging
 import requests
 import muggle_ocr
+import requests.utils
 from urllib import parse
 from pyDes import des, CBC, PAD_PKCS5
 from tenacity import retry, wait_random, wait_fixed, retry_if_exception_type, stop_after_attempt
@@ -53,7 +54,7 @@ class DailyCP:
                     self.school_data=data
                 break
         self.logger.debug("完成初始化")
-        ext={
+        self.ext={
             "lon":self.conf["lon"],
             "model":"Huawei Honor View 10",
             "appVersion":self.apis["appVersion"],
@@ -63,11 +64,11 @@ class DailyCP:
             "lat":self.conf["lat"],
             "deviceId":str(uuid.uuid1())
         }
-        self.logger.debug("生成信息：%s" %json.dumps(ext))
+        self.logger.debug("生成信息：%s" %json.dumps(self.ext))
         self.submit_header={
             "CpdailyStandAlone":0,
             "extension":1,
-            "Cpdaily-Extension":self.DESEncrypt(json.dumps(ext))
+            "Cpdaily-Extension":self.DESEncrypt(json.dumps(self.ext))
             }
     def captcha(self,data:dict,lt:str,ocr:bool=True):
         self.logger.info("正在处理验证码")
@@ -121,10 +122,80 @@ class DailyCP:
                         break
         elif data["joinType"]=="NOTCLOUD":
             self.logger.debug("学校 %s 支持NOTCLOUD方式登陆" %data["name"])
-
+            self.logger.info("正在发送手机短信验证码")
+            headers={
+                "SessionToken":self.apis["SessionToken"],
+                "clientType":"cpdaily_student",
+                "tenantId":data["tenantCode"],
+                "deviceType":"1",
+                "CpdailyStandAlone":"0",
+                "CpdailyInfo":self.DESEncrypt(json.dumps(self.ext)),
+                "RetrofitHeader":self.apis["appVersion"],
+                "Content-Type":"application/json; charset=UTF-8",
+                "Accept-Encoding":"gzip"
+            }
+            self.session.headers.update(headers)
+            json_resp=self.session.post(self.apis["messageCode"],json={"mobile":self.DESEncrypt(str(self.conf["phone"]))}).json()
+            self.logger.debug("获取验证码的服务器回复：%s" %json_resp)
+            if json_resp["errMsg"]!=None:
+                self.logger.error("获取验证码过程出错，错误信息：%s" %json_resp["errMsg"])
+                raise RuntimeError("获取验证码过程出错")
+            self.logger.info("已发送验证码，请注意使用设置中的手机号查收")
+            code=input("请输入短信验证码：").strip()
+            json_resp=self.session.post(self.apis["mobileLogin"],json={"loginToken":code,"loginId":self.conf["phone"]}).json()
+            self.logger.debug("手机号登陆结果：%s" %json_resp)
+            if json_resp["errMsg"]!=None:
+                self.logger.error("登陆出错，错误信息：%s" %json_resp["errMsg"])
+                raise RuntimeError("使用手机号登陆出错")
+            self.logger.info("使用手机号登陆成功")
+            sessionToken=json_resp["sessionToken"]
+            tgc=json_resp["tgc"]
+            self.session.headers.update({"SessionToken":self.DESEncrypt(sessionToken)})
+            json_resp=self.session.post(self.apis["validation"],json={"tgc":self.DESEncrypt(tgc)}).json()
+            self.logger.debug("验证登陆状态回复：%s" %json_resp)
+            if json_resp["errMsg"]!=None:
+                self.logger.error("验证登陆信息出错，错误信息：%s" %json_resp["errMsg"])
+                raise RuntimeError("验证登陆信息出错")
+            self.logger.info("验证登陆信息成功")
+            sessionToken=json_resp["sessionToken"]
+            tgc=json_resp["tgc"]
+            amp={
+                "AMP1":[
+                    {
+                        "value":sessionToken,
+                        "name":"sessionToken"
+                    }
+                ],
+                "AMP2":[
+                    {
+                        "value":sessionToken,
+                        "name":"sessionToken"
+                    }
+                ]
+            }
+            self.session.headers.update({"TGC":self.DESEncrypt(tgc),"AmpCookies":self.DESEncrypt(json.dumps(amp)),"SessionToken":sessionToken})
+            host=""
+            for ampUrl in [data["ampUrl"],data["ampUrl2"]]:
+                if "campusphere" in ampUrl or "cpdaily" in ampUrl:
+                    host=parse.urlparse(ampUrl).netloc
+                    break
+            if host=="":
+                self.logger.error("无正确的amp地址")
+                raise RuntimeError("无正确的amp地址")
+            self.session.get("https://"+host+"/wec-portal-mobile/client/userStoreAppList",allow_redirect=False)
+            self.session.headers.update({"X-Requested-With":"com.wisedu.cpdaily"})
+            location=self.session.get("https://"+host+"/wec-counselor-collector-apps/stu/mobile/index.html",params={"timestamp":str(int(round(time.time()*1000)))},allow_redirect=False).headers["location"]
+            self.session.headers.update({"Host":"www.cpdaily.com","Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8"})
+            location=self.session.get(location,allow_redirect=False).headers["location"]
+            if "MOD_AUTH_CAS" not in requests.utils.dict_from_cookiejar(self.session.get(location).cookies):
+                self.logger.error("获取MOD_AUTH_CAS失败")
+                raise RuntimeError("获取MOD_AUTH_CAS失败")
+            self.logger.info("获取MOD_AUTH_CAS成功")
             self.is_login=True
+            self.logger.info("使用手机登陆完成")
         else:
             self.logger.error("学校 %s 不支持云登陆" %data["name"])
+            self.logger.debug("支持的登陆类型：%s" %data["joinType"])
             raise RuntimeError("不支持云端登陆")
         self.session.headers.update({"User-Agent":self.session.headers["User-Agent"]+" cpdaily/%s wisedu/%s" %(self.apis["appVersion"],self.apis["appVersion"])})
         self.logger.debug("已更新伪装User-Agent")
@@ -315,7 +386,9 @@ class DailyCP:
                                         raise RuntimeError("意外的问题类型")
                         else:
                             rows.remove(row)
+                    self.logger.debug("即将上传的表单数据：%s" %rows)
                     self.session.headers.update(self.submit_header)
+                    self.session.headers.update({"Host":urls.netloc})
                     json_resp=self.session.post("https://"+urls.netloc+"/wec-counselor-collector-apps/stu/collector/submitForm",json={"collectWid":collectWid,"formWid":formWid,"schoolTaskWid":schoolTaskWid,"form":rows}).json()
                     self.logger.debug("提交信息收集回复：%s" %json_resp)
                     if json_resp["message"]=="SUCCESS":

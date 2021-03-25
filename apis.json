@@ -1,6 +1,10 @@
 {
-  "list_addr": "https://mobile.campushoy.com/v6/config/guest/tenant/list",
-  "encryptKey": "b3L26XNL",
-  "appVersion": "8.2.14",
-  "iv": "AQIDBAUGBwg="
+    "list_addr": "https://mobile.campushoy.com/v6/config/guest/tenant/list",
+    "encryptKey": "b3L26XNL",
+    "appVersion": "8.2.14",
+    "iv": "AQIDBAUGBwg=",
+    "SessionToken": "szFn6zAbjjU=",
+    "messageCode": "https://www.cpdaily.com/v6/auth/authentication/mobile/messageCode",
+    "mobileLogin": "https://www.cpdaily.com/v6/auth/authentication/mobileLogin",
+    "validation": "https://www.cpdaily.com/v6/auth/authentication/validation"
 }
